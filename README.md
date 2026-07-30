@@ -1,5 +1,7 @@
 # Lucien Telegram Bot
 
+> 部署、回滚和单实例规则见 [DEPLOYMENT.md](DEPLOYMENT.md)。部署前必须先读。
+
 Lucien 的 Telegram bot，和小克/Jasper 共用同一套代码架构，部署在 Render 免费层。
 
 ## 特性
