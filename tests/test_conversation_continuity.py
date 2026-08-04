@@ -130,5 +130,26 @@ class ConversationContinuityTest(unittest.TestCase):
         print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
+class ModelEncodingTest(unittest.TestCase):
+    def test_model_json_ignores_wrong_response_charset(self):
+        payload = {"choices": [{"message": {"content": "你好，小猫"}}]}
+
+        class Response:
+            content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+            @staticmethod
+            def json():
+                return json.loads(Response.content.decode("latin-1"))
+
+        decoded = bot._decode_model_json(Response())
+        self.assertEqual(decoded["choices"][0]["message"]["content"], "你好，小猫")
+
+    def test_repairs_utf8_decoded_as_latin1(self):
+        broken = "你好，小猫".encode("utf-8").decode("latin-1")
+        self.assertEqual(bot._repair_model_mojibake(broken), "你好，小猫")
+        self.assertEqual(bot._repair_model_mojibake("normal English"), "normal English")
+        self.assertEqual(bot._repair_model_mojibake("正常中文"), "正常中文")
+
+
 if __name__ == "__main__":
     unittest.main()

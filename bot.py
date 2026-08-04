@@ -1224,6 +1224,35 @@ if GIST_HISTORY_IO_ENABLED:
     Thread(target=_sync_histories_from_gist, daemon=True).start()
 
 
+def _decode_model_json(resp):
+    """Parse model JSON as UTF-8 even when a proxy advertises a wrong charset."""
+    try:
+        return json.loads(resp.content.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return resp.json()
+
+
+def _repair_model_mojibake(text):
+    """Repair common UTF-8-as-Latin-1 corruption without touching normal text."""
+    if not isinstance(text, str) or not text:
+        return text
+    markers = ("Ã", "Â", "â", "ä", "å", "æ", "ç", "è", "é", "ï", "ð")
+    suspicious = sum(text.count(marker) for marker in markers)
+    suspicious += sum(1 for char in text if "\x80" <= char <= "\x9f")
+    if suspicious < 2:
+        return text
+    try:
+        repaired = text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    repaired_suspicious = sum(repaired.count(marker) for marker in markers)
+    repaired_suspicious += sum(1 for char in repaired if "\x80" <= char <= "\x9f")
+    if repaired_suspicious >= suspicious:
+        return text
+    print(f"[ENCODING] repaired mojibake chars={len(text)}")
+    return repaired
+
+
 # ============ 自动总结 ============
 LAST_SUMMARIZED = {}
 SUMMARIZE_INTERVAL = 600  # 至少间隔10分钟才触发一次总结
@@ -1238,26 +1267,28 @@ def _call_ai_simple(prompt, max_tokens=500):
             body = {"model": random.choice(models), "max_tokens": max_tokens,
                     "messages": [{"role": "user", "content": prompt}]}
             resp = requests.post(f"{base}/chat/completions", headers=headers, json=body, timeout=60)
-            result = resp.json()
+            result = _decode_model_json(resp)
             if "choices" in result and result["choices"]:
                 choice = result["choices"][0]
                 if choice.get("finish_reason") == "length":
                     print(f"[WARN] simple API output truncated at {max_tokens} tokens")
                     return None
-                return (choice.get("message") or {}).get("content", "").strip()
+                return _repair_model_mojibake(
+                    (choice.get("message") or {}).get("content", "")
+                ).strip()
         else:
             headers = {"x-api-key": api_key, "content-type": "application/json", "anthropic-version": "2023-06-01"}
             body = {"model": random.choice(models), "max_tokens": max_tokens,
                     "messages": [{"role": "user", "content": prompt}]}
             resp = requests.post(f"{base}/messages", headers=headers, json=body, timeout=60)
-            result = resp.json()
+            result = _decode_model_json(resp)
             if result.get("stop_reason") == "max_tokens":
                 print(f"[WARN] simple API output truncated at {max_tokens} tokens")
                 return None
             if "content" in result:
                 for block in result["content"]:
                     if block.get("type") == "text":
-                        return block["text"].strip()
+                        return _repair_model_mojibake(block["text"]).strip()
         return None
 
     try:
@@ -1723,7 +1754,7 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
                             "system": system_prompt, "messages": route_messages}
                     resp = requests.post(f"{b}/messages", headers=headers, json=body, timeout=120)
                 try:
-                    result = resp.json()
+                    result = _decode_model_json(resp)
                 except Exception:
                     print(f"[ERROR] API 返回非JSON: HTTP {resp.status_code} model={model}")
                     continue
@@ -1740,7 +1771,8 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
                     text = (result["choices"][0].get("message") or {}).get("content")
                 if text and str(text).strip():
                     print(f"[API] 模型成功: {model}")
-                    return re.sub(r'\n{2,}', '\n', str(text).strip())
+                    text = _repair_model_mojibake(str(text))
+                    return re.sub(r'\n{2,}', '\n', text.strip())
                 print(f"[ERROR] API 无可用文本: HTTP {resp.status_code} model={model}, body={str(result)[:200]}")
             except requests.exceptions.Timeout:
                 print(f"[WARN] 模型 {model} 超时(120s)，换下一个")
@@ -2868,9 +2900,11 @@ def _call_ai_for_bio(system_prompt, user_prompt, max_tokens=100):
                 ],
             }
             resp = requests.post(f"{base}/chat/completions", headers=headers, json=body, timeout=30)
-            result = resp.json()
+            result = _decode_model_json(resp)
             if "choices" in result:
-                return result["choices"][0]["message"]["content"].strip()
+                return _repair_model_mojibake(
+                    result["choices"][0]["message"]["content"]
+                ).strip()
         else:
             headers = {"x-api-key": CLAUDE_KEY, "content-type": "application/json", "anthropic-version": "2023-06-01"}
             body = {
@@ -2880,11 +2914,11 @@ def _call_ai_for_bio(system_prompt, user_prompt, max_tokens=100):
                 "messages": [{"role": "user", "content": user_prompt}],
             }
             resp = requests.post(f"{base}/messages", headers=headers, json=body, timeout=30)
-            result = resp.json()
+            result = _decode_model_json(resp)
             if "content" in result:
                 for block in result["content"]:
                     if block.get("type") == "text":
-                        return block["text"].strip()
+                        return _repair_model_mojibake(block["text"]).strip()
     except Exception as e:
         print(f"[AI-SIMPLE] call failed: {e}")
     return None
