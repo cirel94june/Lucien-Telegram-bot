@@ -16,6 +16,12 @@ import bot
 
 
 class ConversationContinuityTest(unittest.TestCase):
+    def test_model_api_deadline_allows_slow_valid_generations(self):
+        with mock.patch.dict(os.environ, {"MODEL_API_HARD_TIMEOUT": ""}):
+            self.assertEqual(bot._model_api_hard_timeout(), 60.0)
+        with mock.patch.dict(os.environ, {"MODEL_API_HARD_TIMEOUT": "999"}):
+            self.assertEqual(bot._model_api_hard_timeout(), 110.0)
+
     def test_public_proactive_never_reads_private_memory_or_posts_private_topics(self):
         public_chat = "-100999000111"
         bot.HISTORY_CACHE[public_chat] = []

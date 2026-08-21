@@ -1598,6 +1598,16 @@ def build_model_messages(history, history_limit=50):
     return messages
 
 
+def _model_api_hard_timeout():
+    """Bound the outer API deadline without rejecting normally slow generations."""
+    raw_value = os.environ.get("MODEL_API_HARD_TIMEOUT", "60") or "60"
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        value = 60.0
+    return max(10.0, min(value, 110.0))
+
+
 def call_claude(user_content, memory, history, current_user_time, is_group=False, chat_id=""):
     """调用 AI API，支持 Anthropic 和 OpenAI 两种格式"""
     is_private_group = str(chat_id) in PRIVATE_CHATS
@@ -1739,6 +1749,7 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
         b = api_base.rstrip("/")
         route_messages, image_count = _messages_for_api_format(messages, api_format)
         for model in models:
+            model_started_at = time.monotonic()
             if image_count:
                 print(f"[IMAGE] route format={api_format} model={model} count={image_count}")
             try:
@@ -1770,7 +1781,8 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
                 elif result.get("choices"):
                     text = (result["choices"][0].get("message") or {}).get("content")
                 if text and str(text).strip():
-                    print(f"[API] 模型成功: {model}")
+                    elapsed = time.monotonic() - model_started_at
+                    print(f"[API] 模型成功: {model} elapsed={elapsed:.1f}s")
                     text = _repair_model_mojibake(str(text))
                     return re.sub(r'\n{2,}', '\n', text.strip())
                 print(f"[ERROR] API 无可用文本: HTTP {resp.status_code} model={model}, body={str(result)[:200]}")
@@ -1791,7 +1803,7 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
 
         worker = Thread(target=_worker, daemon=True)
         worker.start()
-        hard_timeout = float(os.environ.get("MODEL_API_HARD_TIMEOUT", "20"))
+        hard_timeout = _model_api_hard_timeout()
         worker.join(timeout=hard_timeout)
         if worker.is_alive():
             print(f"[API-WARN] {label} hard timeout after {hard_timeout:g}s; moving on")
