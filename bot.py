@@ -1919,13 +1919,13 @@ def build_model_messages(history, history_limit=50):
 
 
 def _model_api_hard_timeout():
-    """Bound the outer API deadline without rejecting normally slow generations."""
-    raw_value = os.environ.get("MODEL_API_HARD_TIMEOUT", "60") or "60"
+    """Limit route waiting so a stalled primary can fall through to backup."""
+    raw_value = os.environ.get("MODEL_API_HARD_TIMEOUT", "30") or "30"
     try:
         value = float(raw_value)
     except (TypeError, ValueError):
-        value = 60.0
-    return max(10.0, min(value, 110.0))
+        value = 30.0
+    return max(10.0, min(30.0, value))
 
 
 def _visible_text_from_content(content):

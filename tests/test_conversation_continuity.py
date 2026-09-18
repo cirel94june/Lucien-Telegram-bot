@@ -167,11 +167,16 @@ class ConversationContinuityTest(unittest.TestCase):
         bot.observe_identity(chat_id, "8618367675", "燕燕", "yanyan_account", False)
         self.assertEqual(bot._resolve_identity_reference(chat_id, "燕燕", False), "")
 
-    def test_model_api_deadline_allows_slow_valid_generations(self):
+    def test_model_api_deadline_limits_route_waiting(self):
         with mock.patch.dict(os.environ, {"MODEL_API_HARD_TIMEOUT": ""}):
-            self.assertEqual(bot._model_api_hard_timeout(), 60.0)
+            self.assertEqual(bot._model_api_hard_timeout(), 30.0)
         with mock.patch.dict(os.environ, {"MODEL_API_HARD_TIMEOUT": "999"}):
-            self.assertEqual(bot._model_api_hard_timeout(), 110.0)
+            self.assertEqual(bot._model_api_hard_timeout(), 30.0)
+        for value in ("invalid", "nan", "inf"):
+            with mock.patch.dict(os.environ, {"MODEL_API_HARD_TIMEOUT": value}):
+                self.assertEqual(bot._model_api_hard_timeout(), 30.0)
+        with mock.patch.dict(os.environ, {"MODEL_API_HARD_TIMEOUT": "2"}):
+            self.assertEqual(bot._model_api_hard_timeout(), 10.0)
 
     def test_public_proactive_never_reads_private_memory_or_posts_private_topics(self):
         public_chat = "-100999000111"
