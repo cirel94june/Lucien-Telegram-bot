@@ -1959,6 +1959,13 @@ def _model_api_hard_timeout():
     return max(10.0, min(30.0, value))
 
 
+def _model_api_routes():
+    routes = [(CLAUDE_URL, CLAUDE_KEY, API_FORMAT, CLAUDE_MODELS, "primary")]
+    if BACKUP_API_KEY and BACKUP_BASE_URL and BACKUP_MODELS:
+        routes.append((BACKUP_BASE_URL, BACKUP_API_KEY, BACKUP_API_FORMAT, BACKUP_MODELS, "backup"))
+    return routes
+
+
 def _visible_text_from_content(content):
     if isinstance(content, str):
         return content.strip()
@@ -2162,11 +2169,15 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
             converted.append({**message, "content": blocks})
         return converted, image_count
 
-    def _do_api_call(api_base, api_key, api_format, models):
+    def _do_api_call(api_base, api_key, api_format, models, deadline, label):
         """按顺序逐个模型尝试，成功即返回；识别安全拦截自动换下一个模型"""
         b = api_base.rstrip("/")
         route_messages, image_count = _messages_for_api_format(messages, api_format)
         for model in models:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            request_timeout = (min(5.0, remaining), remaining)
             model_started_at = time.monotonic()
             if image_count:
                 print(f"[IMAGE] route format={api_format} model={model} count={image_count}")
@@ -2175,13 +2186,16 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
                     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
                     body = {"model": model, "max_tokens": 1500,
                             "messages": [{"role": "system", "content": system_prompt}] + route_messages}
-                    resp = requests.post(f"{b}/chat/completions", headers=headers, json=body, timeout=120)
+                    resp = requests.post(f"{b}/chat/completions", headers=headers, json=body, timeout=request_timeout)
                 else:
                     headers = {"x-api-key": api_key, "content-type": "application/json",
                                "anthropic-version": "2023-06-01"}
                     body = {"model": model, "max_tokens": 1500,
                             "system": system_prompt, "messages": route_messages}
-                    resp = requests.post(f"{b}/messages", headers=headers, json=body, timeout=120)
+                    resp = requests.post(f"{b}/messages", headers=headers, json=body, timeout=request_timeout)
+                if time.monotonic() >= deadline:
+                    print(f"[API-WARN] {label} late response ignored model={model}")
+                    return None
                 try:
                     result = _decode_model_json(resp)
                 except Exception:
@@ -2193,7 +2207,7 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
                 text, cot_text = _extract_api_reply_parts(result)
                 if text and str(text).strip():
                     elapsed = time.monotonic() - model_started_at
-                    print(f"[API] 模型成功: {model} elapsed={elapsed:.1f}s")
+                    print(f"[API] 模型成功: {model} route={label} elapsed={elapsed:.1f}s")
                     text = _repair_model_mojibake(str(text))
                     if "gemini" in str(model).lower():
                         cot_text = ""
@@ -2202,24 +2216,26 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
                     return {"text": re.sub(r'\n{2,}', '\n', text.strip()), "cot": str(cot_text or "").strip()}
                 print(f"[ERROR] API 无可用文本: HTTP {resp.status_code} model={model}, body={str(result)[:200]}")
             except requests.exceptions.Timeout:
-                print(f"[WARN] 模型 {model} 超时(120s)，换下一个")
+                print(f"[WARN] 模型 {model} 请求超时 route={label}")
             except Exception as e:
                 print(f"[WARN] 模型 {model} 调用失败: {e}")
         return None
 
     def _run_api_with_deadline(api_base, api_key, api_format, models, label):
         result_box = {}
+        hard_timeout = _model_api_hard_timeout()
+        deadline = time.monotonic() + hard_timeout
+        print(f"[API] {label} start format={api_format} models={len(models)} budget={hard_timeout:g}s")
 
         def _worker():
             try:
-                result_box["reply"] = _do_api_call(api_base, api_key, api_format, models)
+                result_box["reply"] = _do_api_call(api_base, api_key, api_format, models, deadline, label)
             except Exception as exc:
                 result_box["error"] = exc
 
         worker = Thread(target=_worker, daemon=True)
         worker.start()
-        hard_timeout = _model_api_hard_timeout()
-        worker.join(timeout=hard_timeout)
+        worker.join(timeout=max(0.0, deadline - time.monotonic()))
         if worker.is_alive():
             print(f"[API-WARN] {label} hard timeout after {hard_timeout:g}s; moving on")
             return None
@@ -2227,23 +2243,15 @@ def call_claude(user_content, memory, history, current_user_time, is_group=False
             raise result_box["error"]
         return result_box.get("reply")
 
-    # 先试主API
-    try:
-        reply = _run_api_with_deadline(CLAUDE_URL, CLAUDE_KEY, API_FORMAT, CLAUDE_MODELS, "primary")
-        if reply:
-            return {"text": _hub_process_capabilities(reply.get("text", "")), "cot": reply.get("cot", "")}
-    except Exception as e:
-        print(f"[WARN] 主API失败: {e}")
-
-    # 主API挂了，试备用
-    if BACKUP_API_KEY and BACKUP_BASE_URL and BACKUP_MODELS:
-        print(f"[INFO] 切换到备用API...")
+    routes = _model_api_routes()
+    print(f"[API] route order={','.join(route[-1] for route in routes)}")
+    for route in routes:
         try:
-            reply = _run_api_with_deadline(BACKUP_BASE_URL, BACKUP_API_KEY, BACKUP_API_FORMAT, BACKUP_MODELS, "backup")
+            reply = _run_api_with_deadline(*route)
             if reply:
                 return {"text": _hub_process_capabilities(reply.get("text", "")), "cot": reply.get("cot", "")}
         except Exception as e:
-            print(f"[ERROR] 备用API也失败: {e}")
+            print(f"[ERROR] {route[-1]} API失败: {e}")
 
     return None
 
