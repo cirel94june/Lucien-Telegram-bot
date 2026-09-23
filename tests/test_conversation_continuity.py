@@ -328,6 +328,32 @@ class ConversationContinuityTest(unittest.TestCase):
             with self.subTest(leaked=leaked):
                 self.assertEqual(bot._sanitize_model_visible_reply(leaked), expected)
 
+    def test_output_guard_handles_reply_metadata(self):
+        cases = (
+            "Lucien说（回复消息 123，时间 2026-09-23 12:00）：正文。",
+            "Lucien说(回复消息: 123): 正文。",
+            "Lucien说（时间 2026-09-23T12:00:00+08:00）：正文。",
+            "Assistant: Lucien说（回复消息 123）：正文。",
+            "Lucien（当前角色）说（回复消息 123）：正文。",
+        )
+        for leaked in cases:
+            with self.subTest(leaked=leaked):
+                self.assertEqual(bot._sanitize_model_visible_reply(leaked), "正文。")
+        body = "Lucien说（有点生气）：我不同意。"
+        self.assertEqual(bot._sanitize_model_visible_reply(body), body)
+
+    def test_send_split_cleans_metadata_before_chunking(self):
+        leaked = "Lucien说（回复消息 123，时间 2026-09-23 12:00）：正文。"
+        with mock.patch.object(bot, "split_into_short_messages", return_value=["正文。"]) as split:
+            with mock.patch.object(bot, "send_telegram", return_value={"message_id": 1}) as send:
+                bot.send_telegram_split("8749953218", leaked)
+        split.assert_called_once_with("正文。")
+        self.assertEqual(send.call_args.args[1], "正文。")
+
+    def test_output_guard_keeps_reasoning_cleanup_result(self):
+        with mock.patch.object(bot, "_strip_reasoning_sections", return_value="正文。"):
+            self.assertEqual(bot._sanitize_model_visible_reply("unfiltered input"), "正文。")
+
     def test_output_guard_preserves_in_sentence_agent_attribution(self):
         dialogue = "我刚听见小克说：今天不想加班。"
         self.assertEqual(bot._sanitize_model_visible_reply(dialogue), dialogue)
