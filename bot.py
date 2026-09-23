@@ -2311,7 +2311,7 @@ def _sanitize_model_visible_reply(reply):
         r'(?im)^\s*\[?\s*(?:speaker|message_id|reply_to|thread_id)=[^\s\]\n]+'
         r'(?:\s+(?:speaker|message_id|reply_to|thread_id)=[^\s\]\n]+)*\s*\]?\s*',
         '',
-        str(reply),
+        cleaned,
     )
     agent_names = {
         "李狗蛋",
@@ -2323,7 +2323,9 @@ def _sanitize_model_visible_reply(reply):
     )
     transcript_prefix = re.compile(
         r'(?im)^\s*(?:(?:human|user|assistant|ai|bot)\s*[:：]\s*|'
-        r'[^\n:：]{1,64}?说\s*（[^）\n]*Telegram消息\s*\d+[^）\n]*）\s*[:：]\s*|'
+        r'[^\n:：]{1,96}?说\s*[（(]\s*'
+        r'(?:Telegram\s*消息|回复消息|时间)\s*[:：]?\s*\d'
+        r'[^\n()（）]{0,240}[)）]\s*[:：]\s*|'
         rf'(?:{agent_name_pattern})\s*说\s*[:：]\s*)'
     )
     for _ in range(3):
@@ -2560,6 +2562,8 @@ def _telegram_safe_chunks(parts, limit=3800):
 
 def send_telegram_split(chat_id, text, reply_to_message_id=None, cot_text=""):
     """微信式发送：拆成多条短消息，逐条发送"""
+    # Remove transcript metadata before chunking can separate it from its body.
+    text = _sanitize_model_visible_reply(text)
     parts = _telegram_safe_chunks(split_into_short_messages(text))
 
     cot_markup = None
