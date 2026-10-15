@@ -3759,7 +3759,8 @@ def process_message_background(text, chat_id, sender_name, msg_date=None,
 
         # 群聊旁听时的随机插嘴 + 冷却
         # 但如果消息明确是给别的bot的，绝不插嘴
-        if not should_reply and str(chat_id).startswith("-") and not directed_at_other:
+        if (not should_reply and str(chat_id).startswith("-") and not directed_at_other
+                and reply_reason != "superseded"):
             current_time = time.time()
             last_time = LAST_SPOKE.get(chat_id, 0)
 
@@ -3992,10 +3993,26 @@ def process_message_background(text, chat_id, sender_name, msg_date=None,
             pass
 
 
+def _superseded_by_later_reply(args, work_queue):
+    """排队等着的时候，同一个对话（同一话题）后面还有要回复的消息：这条就只记进聊天记录、不单独回复，
+    轮到后面那条时一次回复，能看到前面全部。带图片的不跳过（图片只在那一轮发给模型）。"""
+    if len(args) < 16 or not args[4] or args[6]:
+        return False
+    thread = str(args[15] or "")
+    with work_queue.mutex:
+        later = list(work_queue.queue)
+    return any(len(a) >= 16 and a[4] and str(a[15] or "") == thread for a in later)
+
+
 def _chat_process_worker(chat_id, work_queue):
     while True:
         args = work_queue.get()
         try:
+            if _superseded_by_later_reply(args, work_queue):
+                print(f"[QUEUE] 后面还有要回的消息，这条先只记录 chat={chat_id} msg={args[5]}")
+                args = list(args)
+                args[4] = False          # should_reply
+                args[11] = "superseded"  # reply_reason：也不随机插嘴
             process_message_background(*args)
         except Exception as exc:
             print(f"[QUEUE] worker error chat={chat_id}: {exc}")
