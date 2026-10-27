@@ -10,8 +10,6 @@ from hub_window import events_from_response, merge_events
 
 def permitted(source, destination, private_chats, ceci_id):
     source, destination = str(source), str(destination)
-    if session_boundary.active(source) or session_boundary.active(destination):
-        return False
     private = set(map(str, private_chats))
     owner = str(ceci_id or "")
     if not destination.startswith("-") and destination != owner:
@@ -92,6 +90,8 @@ class CrossWindowContext:
             if cid == str(current_chat_id) or not permitted(cid, current_chat_id, private_chats, ceci_id):
                 continue
             events = recent_events(merge_events(cached.get(key, []), snapshots.get(key, [])))
+            events = session_boundary.filter_events(events, cid)
+            events = session_boundary.filter_events(events, current_chat_id)
             if not events:
                 continue
             label = "私聊" if not cid.startswith("-") else ("私密群" if cid in private_chats else "公开群")
