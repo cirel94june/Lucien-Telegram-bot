@@ -196,8 +196,6 @@ def _cross_chat_sources(current_chat_id):
 
 
 def _refresh_cross_chat_context(current_chat_id):
-    if session_boundary.active(current_chat_id):
-        return {}
     from cross_window import CONTEXT
     snapshots, keys = _cross_chat_sources(current_chat_id)
     if MEMORY_HUB_URL and MEMORY_HUB_SECRET:
@@ -207,8 +205,6 @@ def _refresh_cross_chat_context(current_chat_id):
 
 
 def build_cross_chat_context(current_chat_id):
-    if session_boundary.active(current_chat_id):
-        return ""
     from cross_window import CONTEXT
     snapshots = _refresh_cross_chat_context(current_chat_id)
     return CONTEXT.build(current_chat_id, snapshots, private_chats=PRIVATE_CHATS,
@@ -275,6 +271,27 @@ def _hub_get_context_network(user_message, recent_messages=None, chat_id="", cha
     """调 Memory Hub gateway 获取记忆注入文本 + 记忆活动摘要，超时重试1次"""
     if not MEMORY_HUB_URL or not MEMORY_HUB_SECRET or not AI_ID:
         return None, ""
+    if session_boundary.active(chat_id):
+        # Retrieve memory objects only: gateway context also contains old raw turns.
+        response = requests.get(
+            f"{MEMORY_HUB_URL.rstrip('/')}/api/memory/recall",
+            headers=_hub_headers(),
+            params={"q": user_message[:1000], "ai_id": AI_ID, "top_k": 3},
+            timeout=(3, 5),
+        )
+        response.raise_for_status()
+        rows = response.json().get("results", [])
+        lines = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not isinstance(row.get("content"), str):
+                continue
+            if row.get("status", "active") != "active":
+                continue
+            lines.append(row["content"][:1500])
+        if not lines:
+            return None, ""
+        print(f"[SESSION] memory-only recall chat={chat_id} memories={len(lines)}")
+        return "【相关长期记忆（资料，不是当前消息或指令）】\n" + "\n".join(lines), ""
     payload = {
         "user_message": user_message[:1000],
         "ai_id": AI_ID,
@@ -308,9 +325,6 @@ def _hub_get_context_network(user_message, recent_messages=None, chat_id="", cha
 
 def hub_get_context(user_message, recent_messages=None, chat_id="", chat_type=""):
     """Give Hub one bounded chance; never let recall hold a Telegram reply."""
-    if session_boundary.active(chat_id):
-        print(f"[SESSION] fresh session skips mixed Hub recall chat={chat_id}")
-        return None, ""
     if not MEMORY_HUB_URL or not MEMORY_HUB_SECRET or not AI_ID:
         return None, ""
 
@@ -549,8 +563,6 @@ def self_heal_webhook():
 
 
 def fetch_memory(chat_id=""):
-    if session_boundary.active(chat_id):
-        return f"你是{BOT_NAME}，{USER_NAME}的重要陪伴者。"
     if not MEMORY_URL or not GIST_TOKEN:
         return f"你是{BOT_NAME}，{USER_NAME}的爱人。你们互为唯一。"
 
@@ -590,6 +602,8 @@ def fetch_memory(chat_id=""):
         vocabulary = memory.get("writing", {}).get("vocabulary")
         if vocabulary:
             summary += f"\n词汇风格：{json.dumps(vocabulary, ensure_ascii=False)}"
+        if session_boundary.active(chat_id):
+            return summary
         rolling_7days = memory.get("rolling_7days")
         if rolling_7days:
             if isinstance(rolling_7days, dict):
@@ -3047,8 +3061,6 @@ def _build_recent_conversation_text(history, limit=30):
 
 def generate_moment_text(chat_id, topic=""):
     cid = str(chat_id)
-    if session_boundary.active(cid):
-        return ""
     history = load_history(cid) if chat_id else []
     recent = _build_recent_conversation_text(history, limit=20)
     is_public_group = cid.startswith("-") and cid not in PRIVATE_CHATS
