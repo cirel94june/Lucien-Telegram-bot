@@ -26,6 +26,7 @@ from threading import Thread, Lock
 from queue import Queue
 from zoneinfo import ZoneInfo
 from hub_window import WindowRecovery
+import session_boundary
 
 WINDOW_RECOVERY = WindowRecovery()
 WINDOW_HISTORY_CACHE = {}
@@ -195,6 +196,8 @@ def _cross_chat_sources(current_chat_id):
 
 
 def _refresh_cross_chat_context(current_chat_id):
+    if session_boundary.active(current_chat_id):
+        return {}
     from cross_window import CONTEXT
     snapshots, keys = _cross_chat_sources(current_chat_id)
     if MEMORY_HUB_URL and MEMORY_HUB_SECRET:
@@ -204,6 +207,8 @@ def _refresh_cross_chat_context(current_chat_id):
 
 
 def build_cross_chat_context(current_chat_id):
+    if session_boundary.active(current_chat_id):
+        return ""
     from cross_window import CONTEXT
     snapshots = _refresh_cross_chat_context(current_chat_id)
     return CONTEXT.build(current_chat_id, snapshots, private_chats=PRIVATE_CHATS,
@@ -303,6 +308,9 @@ def _hub_get_context_network(user_message, recent_messages=None, chat_id="", cha
 
 def hub_get_context(user_message, recent_messages=None, chat_id="", chat_type=""):
     """Give Hub one bounded chance; never let recall hold a Telegram reply."""
+    if session_boundary.active(chat_id):
+        print(f"[SESSION] fresh session skips mixed Hub recall chat={chat_id}")
+        return None, ""
     if not MEMORY_HUB_URL or not MEMORY_HUB_SECRET or not AI_ID:
         return None, ""
 
@@ -541,6 +549,8 @@ def self_heal_webhook():
 
 
 def fetch_memory(chat_id=""):
+    if session_boundary.active(chat_id):
+        return f"你是{BOT_NAME}，{USER_NAME}的重要陪伴者。"
     if not MEMORY_URL or not GIST_TOKEN:
         return f"你是{BOT_NAME}，{USER_NAME}的爱人。你们互为唯一。"
 
@@ -1227,6 +1237,11 @@ def _background_load_history(chat_id, live_history):
 
 
 def load_history(chat_id):
+    if session_boundary.active(chat_id):
+        with HISTORY_LOCK:
+            history = HISTORY_CACHE.setdefault(str(chat_id), [])
+            history[:] = session_boundary.filter_events(history, chat_id)
+            return history
     # Automatic Gist I/O is disabled by default: reliability beats cold history.
     if chat_id in HISTORY_CACHE:
         return HISTORY_CACHE[chat_id]
@@ -1322,7 +1337,7 @@ def save_history(history, chat_id, force=False):
     HISTORY_CACHE[chat_id] = history
 
     # Keep live conversation in memory/Hub without touching GitHub on the reply path.
-    if not GIST_HISTORY_IO_ENABLED:
+    if not GIST_HISTORY_IO_ENABLED or session_boundary.active(chat_id):
         return
 
     # 历史超过35条时触发自动总结
@@ -1419,6 +1434,8 @@ def _sync_histories_from_gist(overwrite_idle=False):
             except json.JSONDecodeError:
                 continue
             for cid, blob in state.items():
+                if session_boundary.active(cid):
+                    continue
                 if not isinstance(blob, dict):
                     continue
                 fresh = blob.get("chat_history", [])
@@ -1877,6 +1894,7 @@ def _model_speaker_label(event, speaker, current_agent):
 
 def build_model_messages(history, history_limit=50):
     """Build ordered context as natural dialogue while retaining identity metadata in storage."""
+    history = session_boundary.filter_events(history)
     messages = []
     current_agent = _current_agent_id()
     for event in history[-history_limit:]:
@@ -3029,6 +3047,8 @@ def _build_recent_conversation_text(history, limit=30):
 
 def generate_moment_text(chat_id, topic=""):
     cid = str(chat_id)
+    if session_boundary.active(cid):
+        return ""
     history = load_history(cid) if chat_id else []
     recent = _build_recent_conversation_text(history, limit=20)
     is_public_group = cid.startswith("-") and cid not in PRIVATE_CHATS
@@ -3792,6 +3812,8 @@ def process_message_background(text, chat_id, sender_name, msg_date=None,
                 make_event=_make_conversation_event, history_lock=HISTORY_LOCK,
                 allow=should_reply,
             )
+        with HISTORY_LOCK:
+            history[:] = session_boundary.filter_events(history, chat_id)
         print(f"[TRACE] history load end chat={chat_id} len={len(history)}")
         history.append(_make_conversation_event(
             role="user",
