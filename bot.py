@@ -26,6 +26,7 @@ from threading import Thread, Lock
 from queue import Queue
 from zoneinfo import ZoneInfo
 from hub_window import WindowRecovery
+import lock_guard
 import session_boundary
 
 WINDOW_RECOVERY = WindowRecovery()
@@ -411,6 +412,8 @@ def hub_capture_log(user_message, ai_response, chat_id="", message_timestamp=Non
     """调 Memory Hub 对话捕获（后台调用）"""
     if not MEMORY_HUB_URL or not MEMORY_HUB_SECRET or not AI_ID:
         return
+    if lock_guard.is_lock_refusal(ai_response):
+        ai_response = ""  # 只记小猫这句，不把「已锁定」写进原文库（重启恢复时会被读回来）
     try:
         cid = str(chat_id)
         if not cid.startswith("-"):
@@ -1929,6 +1932,9 @@ def build_model_messages(history, history_limit=50):
         speaker_label = _model_speaker_label(event, speaker, current_agent)
         raw_text = event.get("raw_text")
         body = raw_text if raw_text not in (None, "") else event.get("content", "")
+        if (event.get("role") == "assistant" or event.get("sender_type") == "agent" or event.get("bot")) \
+                and lock_guard.is_lock_refusal(body):
+            continue  # AI 的「对话已锁定」式拒绝不回灌，否则下一轮会照着自己复读（lock_guard.py）
         if event.get("context_note"):
             body = f"{event['context_note']}\n{body}"
         entry_content = _strip_action_artifacts(f"{speaker_label}说{detail_text}：{body}")
