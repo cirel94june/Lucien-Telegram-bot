@@ -4,11 +4,14 @@ from datetime import datetime
 from threading import Lock, Thread
 
 import requests
+import session_boundary
 from hub_window import events_from_response, merge_events
 
 
 def permitted(source, destination, private_chats, ceci_id):
     source, destination = str(source), str(destination)
+    if session_boundary.active(source) or session_boundary.active(destination):
+        return False
     private = set(map(str, private_chats))
     owner = str(ceci_id or "")
     if not destination.startswith("-") and destination != owner:
